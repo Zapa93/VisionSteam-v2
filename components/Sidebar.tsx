@@ -15,6 +15,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeCategory, onSelectCatego
           return (
             <button
               key={category}
+              data-sidebar-item={category}
               onClick={() => onSelectCategory(category)}
               className={`w-full group relative flex items-center px-4 py-4 rounded-xl transition-all duration-200 
                 ${isActive 

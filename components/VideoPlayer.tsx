@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Channel } from '../types';
 import { DEFAULT_LOGO } from '../constants';
 
@@ -21,19 +21,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
   
   // UI State
   const [showControls, setShowControls] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isListOpen, setIsListOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
+  // Timers
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hlsRef = useRef<any>(null);
 
   // --- VIRTUALIZATION LOGIC ---
-  // Only render a small window of channels to maintain 60FPS on TV
   const ITEM_HEIGHT = 80; // px
-  const OVERSCAN = 5; // items to render outside view
-  const LIST_HEIGHT = 600; // approximate height of sidebar list
+  const LIST_HEIGHT = 1080; // Full viewport height for TV
+  const RENDER_WINDOW = 30; // Render ~2.5 screens worth of content to ensure smooth scrolling
   
   // Calculate index on mount/change
   useEffect(() => {
@@ -41,84 +41,138 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
     if (idx !== -1) setSelectedIndex(idx);
   }, [channel.id, allChannels]);
 
-  // Scroll active item into view when list opens or index changes via keys
+  // Scroll active item into view
   useEffect(() => {
     if (isListOpen && listContainerRef.current) {
-      // Simple scroll logic for the container
+      // Center the selected item
       const targetScroll = Math.max(0, selectedIndex * ITEM_HEIGHT - LIST_HEIGHT / 2 + ITEM_HEIGHT / 2);
       listContainerRef.current.scrollTo({ top: targetScroll, behavior: 'auto' }); 
-      // 'auto' is better for performance than 'smooth' on older TVs
     }
   }, [selectedIndex, isListOpen]);
 
-  // --- VIDEO LOGIC ---
+  // --- HISTORY API / BACK BUTTON TRAP ---
+  useEffect(() => {
+    // Push a state so we can trap the back button
+    window.history.pushState({ playerOpen: true }, '', window.location.href);
+
+    const handlePopState = (event: PopStateEvent) => {
+      // If the list is open, the keydown handler should have caught it. 
+      // If we got here, it means we are actually navigating back.
+      onClose();
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      // Clean up history state if we are unmounting without popping
+      if (window.history.state?.playerOpen) {
+          window.history.back();
+      }
+    };
+  }, [onClose]);
+
+  // --- VIDEO LOGIC (Native HLS First + Infinite Retry) ---
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
+    // Cleanup previous instance
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
-
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+    }
+    
     setIsLoading(true);
-    setError(null);
 
-    const loadVideo = () => {
-      if (window.Hls && window.Hls.isSupported()) {
-        const hls = new window.Hls({
-          enableWorker: true,
-          lowLatencyMode: true,
-          backBufferLength: 90,
-          maxBufferLength: 30,
-          maxMaxBufferLength: 600,
-          startLevel: -1,
-          xhrSetup: (xhr: any) => { xhr.withCredentials = false; },
-        });
-        
-        hlsRef.current = hls;
-        hls.loadSource(channel.url);
-        hls.attachMedia(video);
-        
-        hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
-          setIsLoading(false);
-          video.play().catch(e => console.warn("Autoplay blocked:", e));
-        });
+    // Function to initialize playback
+    const loadStream = () => {
+        setIsLoading(true);
+        const url = channel.url;
+        const isNativeSupported = video.canPlayType('application/vnd.apple.mpegurl');
 
-        hls.on(window.Hls.Events.ERROR, (_event: any, data: any) => {
-           if (data.fatal) {
-             switch (data.type) {
-               case window.Hls.ErrorTypes.NETWORK_ERROR:
-                 hls.startLoad();
-                 break;
-               case window.Hls.ErrorTypes.MEDIA_ERROR:
-                 hls.recoverMediaError();
-                 break;
-               default:
-                 hls.destroy();
-                 setError("Stream Error");
-                 break;
-             }
-           }
-        });
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = channel.url;
-        video.addEventListener('loadedmetadata', () => {
-          setIsLoading(false);
-          video.play().catch(() => {});
-        });
-        video.addEventListener('error', () => {
-            setError("Playback Error");
+        if (isNativeSupported) {
+          console.log("Using Native HLS Playback");
+          video.src = url;
+          video.load();
+        } else if (window.Hls && window.Hls.isSupported()) {
+          console.log("Using HLS.js Playback");
+          const hls = new window.Hls({
+            enableWorker: true,
+            lowLatencyMode: true,
+            backBufferLength: 90,
+          });
+          hlsRef.current = hls;
+          hls.loadSource(url);
+          hls.attachMedia(video);
+          
+          hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
             setIsLoading(false);
-        });
-      } else {
-        setError("Not Supported");
-        setIsLoading(false);
+            video.play().catch(() => {});
+          });
+
+          hls.on(window.Hls.Events.ERROR, (_event: any, data: any) => {
+            if (data.fatal) {
+              console.log("HLS Fatal Error, retrying...", data);
+              // Instead of showing error, destroy and retry
+              hls.destroy();
+              retryConnection();
+            }
+          });
+        } else {
+           // Not supported, try standard src (might work on some browsers)
+           video.src = url;
+        }
+    };
+
+    const retryConnection = () => {
+        if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = setTimeout(() => {
+            console.log("Retrying connection...");
+            loadStream();
+        }, 3000); // Retry every 3 seconds
+    };
+
+    // Success Handler
+    const handleStreamReady = () => {
+      setIsLoading(false);
+      if (video.paused) {
+        video.play().catch(() => {});
       }
     };
 
-    loadVideo();
-    return () => hlsRef.current?.destroy();
+    // Error Handler (Native)
+    const handleNativeError = (e: Event) => {
+      console.warn("Native Video Error, retrying...", e);
+      retryConnection();
+    };
+
+    // Attach Listeners
+    video.addEventListener('loadedmetadata', handleStreamReady);
+    video.addEventListener('canplay', handleStreamReady);
+    video.addEventListener('playing', handleStreamReady);
+    video.addEventListener('timeupdate', () => {
+       if (video.currentTime > 0.1 && isLoading) setIsLoading(false);
+    });
+    video.addEventListener('error', handleNativeError);
+    video.addEventListener('stalled', retryConnection);
+
+    // Initial Load
+    loadStream();
+
+    return () => {
+      if (hlsRef.current) hlsRef.current.destroy();
+      if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+      video.removeEventListener('loadedmetadata', handleStreamReady);
+      video.removeEventListener('canplay', handleStreamReady);
+      video.removeEventListener('playing', handleStreamReady);
+      video.removeEventListener('error', handleNativeError);
+      video.removeEventListener('stalled', retryConnection);
+      video.removeAttribute('src');
+      video.load();
+    };
   }, [channel]);
 
   // --- CONTROLS LOGIC ---
@@ -143,14 +197,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
   // --- INPUT HANDLING ---
   const handleChannelSwitch = (target: Channel) => {
     if (target.id === channel.id) {
-       setIsListOpen(false); // Toggle close
+       setIsListOpen(false); // Just close the list if selecting same channel
     } else {
        onChannelSelect(target); // Zapping: Keep list open
-       // Note: selectedIndex will update via the useEffect on prop change
     }
   };
 
   useEffect(() => {
+    // Only attach key listeners if we are looking at this component's ID context? 
+    // Actually no, App.tsx handles unmounting this component, so we are safe.
+    // However, removing channel.id from deps makes it more stable.
+    
     const handleKeyDown = (e: KeyboardEvent) => {
       resetControls();
       
@@ -160,12 +217,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
       const isDown = e.key === 'ArrowDown';
 
       if (isBack) {
+        // CRITICAL: Stop propagation immediately to prevent browser back action
         e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
+        
         if (isListOpen) {
+          // Hierarchy 1: Close List
           setIsListOpen(false);
         } else {
-          onClose();
+          // Hierarchy 2: Close Player (Manual history back)
+          window.history.back();
         }
         return;
       }
@@ -189,7 +251,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
           e.preventDefault();
           handleChannelSwitch(allChannels[selectedIndex]);
         } else {
-          // Just show controls
           setShowControls(true);
         }
       }
@@ -197,30 +258,31 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isListOpen, selectedIndex, allChannels, onChannelSelect, onClose, resetControls, channel.id]);
+  }, [isListOpen, selectedIndex, allChannels, onChannelSelect, resetControls]);
 
   // --- VIRTUAL LIST RENDERER ---
-  // Calculate which items to render based on scroll/selection
-  // We center the window around the selected index for key nav, 
-  // but for a true pointer-capable list, we render a larger slice.
-  // For simplicity and performance, we'll render a slice based on selectedIndex since keys are primary.
   const renderVirtualList = () => {
     if (!isListOpen) return null;
 
     const totalHeight = allChannels.length * ITEM_HEIGHT;
-    // Determine visible window based on selectedIndex (keeps selection centered-ish)
-    // We want to show X items, ensuring we don't go out of bounds
-    const startIdx = Math.max(0, Math.min(selectedIndex - 6, allChannels.length - 12));
-    const endIdx = Math.min(allChannels.length, startIdx + 15);
     
-    // We use absolute positioning to place items in the massive container
+    // Calculate start index to keep selected item centered in the render window
+    // We render RENDER_WINDOW items.
+    let startIdx = Math.max(0, selectedIndex - Math.floor(RENDER_WINDOW / 2));
+    
+    // Adjust start index if we are near the end of the list to ensure full window is filled
+    if (startIdx + RENDER_WINDOW > allChannels.length) {
+        startIdx = Math.max(0, allChannels.length - RENDER_WINDOW);
+    }
+    
+    const endIdx = Math.min(allChannels.length, startIdx + RENDER_WINDOW);
+    
     return (
       <div 
         ref={listContainerRef}
         className="flex-1 overflow-y-auto no-scrollbar relative bg-zinc-900/95"
       >
         <div style={{ height: `${totalHeight}px`, position: 'relative' }}>
-          {/* Render only visible slice */}
           {allChannels.slice(startIdx, endIdx).map((c, i) => {
             const actualIndex = startIdx + i;
             const isSelected = actualIndex === selectedIndex;
@@ -240,14 +302,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
                    right: 0,
                    height: `${ITEM_HEIGHT}px`
                  }}
-                 className={`px-6 flex items-center gap-4 cursor-pointer transition-colors
-                   ${isSelected ? 'bg-white/10' : 'hover:bg-white/5'} 
+                 className={`px-6 flex items-center gap-4 cursor-pointer
+                   ${isSelected ? 'border-2 border-white bg-white/5' : 'border-2 border-transparent'} 
                    ${isActiveChannel ? 'text-green-400' : 'text-gray-300'}
                  `}
                >
-                  {/* Selection Indicator Bar */}
-                  {isSelected && <div className="absolute left-0 top-0 bottom-0 w-1 bg-white" />}
-                  
                   <div className="w-12 h-12 rounded bg-black p-1 flex-shrink-0 flex items-center justify-center">
                     <img 
                       src={c.logo} 
@@ -279,22 +338,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
         poster={channel.logo}
         autoPlay
         playsInline
-        crossOrigin="anonymous"
       />
 
-      {isLoading && !error && (
+      {/* Loading Spinner - Always show if loading (even during retry) */}
+      {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-          <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-purple-500"></div>
-        </div>
-      )}
-
-      {error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
-          <div className="text-center">
-            <p className="text-xl font-bold text-white mb-4">{error}</p>
-            <button onClick={onClose} className="px-8 py-3 bg-white text-black rounded-full font-bold focus:scale-105 transition-transform">
-              Close Player
-            </button>
+          <div className="flex flex-col items-center gap-4 bg-black/50 p-6 rounded-2xl backdrop-blur-sm">
+             <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-white"></div>
+             {/* No text needed, cleaner look */}
           </div>
         </div>
       )}
