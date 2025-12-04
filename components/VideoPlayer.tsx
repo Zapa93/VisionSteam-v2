@@ -25,6 +25,31 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
   const [isListOpen, setIsListOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
+  // Derived State Logic to sync props with internal index immediately
+  const [prevChannelId, setPrevChannelId] = useState<string | null>(null);
+
+  if (channel.id !== prevChannelId) {
+     const idx = allChannels.findIndex(c => c.id === channel.id);
+     if (idx !== -1) {
+        setSelectedIndex(idx);
+        setPrevChannelId(channel.id);
+     }
+  }
+
+  // Refs for Event Listener Access (Fixes Stale Closures)
+  const channelRef = useRef(channel);
+  const allChannelsRef = useRef(allChannels);
+  const isListOpenRef = useRef(isListOpen);
+  const selectedIndexRef = useRef(selectedIndex);
+  const onCloseRef = useRef(onClose);
+  
+  // Sync Refs
+  useEffect(() => { channelRef.current = channel; }, [channel]);
+  useEffect(() => { allChannelsRef.current = allChannels; }, [allChannels]);
+  useEffect(() => { isListOpenRef.current = isListOpen; }, [isListOpen]);
+  useEffect(() => { selectedIndexRef.current = selectedIndex; }, [selectedIndex]);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+
   // Timers
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -33,14 +58,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
   // --- VIRTUALIZATION LOGIC ---
   const ITEM_HEIGHT = 80; // px
   const LIST_HEIGHT = 1080; // Full viewport height for TV
-  const RENDER_WINDOW = 30; // Render ~2.5 screens worth of content to ensure smooth scrolling
+  const RENDER_WINDOW = 30; // Render buffer
   
-  // Calculate index on mount/change
-  useEffect(() => {
-    const idx = allChannels.findIndex((c) => c.id === channel.id);
-    if (idx !== -1) setSelectedIndex(idx);
-  }, [channel.id, allChannels]);
-
   // Scroll active item into view
   useEffect(() => {
     if (isListOpen && listContainerRef.current) {
@@ -52,31 +71,30 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
 
   // --- HISTORY API / BACK BUTTON TRAP ---
   useEffect(() => {
-    // Push a state so we can trap the back button
+    // Push state ONLY once when component mounts
     window.history.pushState({ playerOpen: true }, '', window.location.href);
 
     const handlePopState = (event: PopStateEvent) => {
-      // If the list is open, the keydown handler should have caught it. 
-      // If we got here, it means we are actually navigating back.
-      onClose();
+      // Use Ref to call the latest onClose without re-triggering effect
+      onCloseRef.current();
     };
 
     window.addEventListener('popstate', handlePopState);
+    
     return () => {
       window.removeEventListener('popstate', handlePopState);
-      // Clean up history state if we are unmounting without popping
+      // Clean up history only when component unmounts (player closes)
       if (window.history.state?.playerOpen) {
           window.history.back();
       }
     };
-  }, [onClose]);
+  }, []); // Empty dependency array is CRITICAL to prevent history.back() during channel switches
 
   // --- VIDEO LOGIC (Native HLS First + Infinite Retry) ---
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    // Cleanup previous instance
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
@@ -87,7 +105,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
     
     setIsLoading(true);
 
-    // Function to initialize playback
     const loadStream = () => {
         setIsLoading(true);
         const url = channel.url;
@@ -115,14 +132,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
 
           hls.on(window.Hls.Events.ERROR, (_event: any, data: any) => {
             if (data.fatal) {
-              console.log("HLS Fatal Error, retrying...", data);
-              // Instead of showing error, destroy and retry
               hls.destroy();
               retryConnection();
             }
           });
         } else {
-           // Not supported, try standard src (might work on some browsers)
            video.src = url;
         }
     };
@@ -132,10 +146,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
         retryTimeoutRef.current = setTimeout(() => {
             console.log("Retrying connection...");
             loadStream();
-        }, 3000); // Retry every 3 seconds
+        }, 3000);
     };
 
-    // Success Handler
     const handleStreamReady = () => {
       setIsLoading(false);
       if (video.paused) {
@@ -143,13 +156,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
       }
     };
 
-    // Error Handler (Native)
     const handleNativeError = (e: Event) => {
       console.warn("Native Video Error, retrying...", e);
       retryConnection();
     };
 
-    // Attach Listeners
     video.addEventListener('loadedmetadata', handleStreamReady);
     video.addEventListener('canplay', handleStreamReady);
     video.addEventListener('playing', handleStreamReady);
@@ -159,7 +170,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
     video.addEventListener('error', handleNativeError);
     video.addEventListener('stalled', retryConnection);
 
-    // Initial Load
     loadStream();
 
     return () => {
@@ -177,6 +187,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
 
   // --- CONTROLS LOGIC ---
   const resetControls = useCallback(() => {
+    // Access current list open state via Ref if needed, or rely on state update
+    // Here strictly for UI visibility
     if (isListOpen) {
       setShowControls(false); 
       return;
@@ -194,20 +206,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
     };
   }, [resetControls]);
 
-  // --- INPUT HANDLING ---
-  const handleChannelSwitch = (target: Channel) => {
-    if (target.id === channel.id) {
-       setIsListOpen(false); // Just close the list if selecting same channel
-    } else {
-       onChannelSelect(target); // Zapping: Keep list open
-    }
-  };
-
+  // --- INPUT HANDLING (Using Refs to avoid Stale Closures) ---
   useEffect(() => {
-    // Only attach key listeners if we are looking at this component's ID context? 
-    // Actually no, App.tsx handles unmounting this component, so we are safe.
-    // However, removing channel.id from deps makes it more stable.
-    
     const handleKeyDown = (e: KeyboardEvent) => {
       resetControls();
       
@@ -216,17 +216,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
       const isUp = e.key === 'ArrowUp';
       const isDown = e.key === 'ArrowDown';
 
+      // Access LIVE state
+      const currentIsListOpen = isListOpenRef.current;
+      const currentIdx = selectedIndexRef.current;
+      const currentAllChannels = allChannelsRef.current;
+      const currentChannel = channelRef.current;
+
       if (isBack) {
-        // CRITICAL: Stop propagation immediately to prevent browser back action
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
         
-        if (isListOpen) {
-          // Hierarchy 1: Close List
+        if (currentIsListOpen) {
           setIsListOpen(false);
         } else {
-          // Hierarchy 2: Close Player (Manual history back)
+          // Trigger history back manually, which calls handlePopState, which calls onClose
           window.history.back();
         }
         return;
@@ -234,22 +238,34 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
 
       if (isUp) {
         e.preventDefault();
-        if (!isListOpen) {
+        e.stopPropagation(); // Stop scrolling parent
+        if (!currentIsListOpen) {
           setIsListOpen(true);
         } else {
           setSelectedIndex(prev => Math.max(0, prev - 1));
         }
       } else if (isDown) {
         e.preventDefault();
-        if (!isListOpen) {
+        e.stopPropagation(); // Stop scrolling parent
+        if (!currentIsListOpen) {
           setIsListOpen(true);
         } else {
-          setSelectedIndex(prev => Math.min(allChannels.length - 1, prev + 1));
+          setSelectedIndex(prev => Math.min(currentAllChannels.length - 1, prev + 1));
         }
       } else if (isEnter) {
-        if (isListOpen) {
-          e.preventDefault();
-          handleChannelSwitch(allChannels[selectedIndex]);
+        e.preventDefault();
+        e.stopPropagation();
+        // CRITICAL: Stop propagation so the button on the underlying App page doesn't get clicked
+        
+        if (currentIsListOpen) {
+          const target = currentAllChannels[currentIdx];
+          
+          // Strict ID Check using Refs
+          if (target.id === currentChannel.id) {
+             setIsListOpen(false);
+          } else {
+             onChannelSelect(target);
+          }
         } else {
           setShowControls(true);
         }
@@ -258,19 +274,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isListOpen, selectedIndex, allChannels, onChannelSelect, resetControls]);
+  }, [onChannelSelect, resetControls]);
 
   // --- VIRTUAL LIST RENDERER ---
   const renderVirtualList = () => {
     if (!isListOpen) return null;
 
     const totalHeight = allChannels.length * ITEM_HEIGHT;
-    
-    // Calculate start index to keep selected item centered in the render window
-    // We render RENDER_WINDOW items.
     let startIdx = Math.max(0, selectedIndex - Math.floor(RENDER_WINDOW / 2));
     
-    // Adjust start index if we are near the end of the list to ensure full window is filled
     if (startIdx + RENDER_WINDOW > allChannels.length) {
         startIdx = Math.max(0, allChannels.length - RENDER_WINDOW);
     }
@@ -293,7 +305,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
                  key={c.id}
                  onClick={() => {
                    setSelectedIndex(actualIndex);
-                   handleChannelSwitch(c);
+                   if (c.id === channel.id) {
+                     setIsListOpen(false);
+                   } else {
+                     onChannelSelect(c);
+                   }
                  }}
                  style={{
                    position: 'absolute',
@@ -303,7 +319,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
                    height: `${ITEM_HEIGHT}px`
                  }}
                  className={`px-6 flex items-center gap-4 cursor-pointer
-                   ${isSelected ? 'border-2 border-white bg-white/5' : 'border-2 border-transparent'} 
+                   ${isSelected ? 'border-2 border-white' : 'border-2 border-transparent'} 
                    ${isActiveChannel ? 'text-green-400' : 'text-gray-300'}
                  `}
                >
@@ -340,17 +356,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
         playsInline
       />
 
-      {/* Loading Spinner - Always show if loading (even during retry) */}
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
           <div className="flex flex-col items-center gap-4 bg-black/50 p-6 rounded-2xl backdrop-blur-sm">
              <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-white"></div>
-             {/* No text needed, cleaner look */}
           </div>
         </div>
       )}
 
-      {/* Quick Channel Switcher (Overlay) */}
       <div 
         className={`absolute top-0 left-0 bottom-0 w-96 bg-zinc-900 shadow-2xl z-30 transform transition-transform duration-200 ease-out flex flex-col ${isListOpen ? 'translate-x-0' : '-translate-x-full'}`}
       >
@@ -361,7 +374,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
         {renderVirtualList()}
       </div>
 
-      {/* Info Overlay (Bottom) */}
       <div 
         className={`absolute inset-0 pointer-events-none transition-opacity duration-300 ${showControls && !isListOpen ? 'opacity-100' : 'opacity-0'}`}
       >
