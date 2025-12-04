@@ -1,0 +1,5 @@
+{
+  "name": "OLED Stream C5",
+  "description": "High-performance IPTV player optimized for LG OLED C5 with WebOS 23.",
+  "requestFramePermissions": []
+}

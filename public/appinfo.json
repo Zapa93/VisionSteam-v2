@@ -1,0 +1,15 @@
+{
+    "id": "com.zapa.visionstream.c5",
+    "version": "1.0.0",
+    "vendor": "Zapa",
+    "type": "web",
+    "main": "index.html",
+    "title": "VisionStream C5",
+    "icon": "icon.png",
+    "uiRevision": "2",
+    "requiredPermissions": ["internet"],
+    "webWebOS": {
+        "disableWebSecurity": true,
+        "allowMixedContent": true
+    }
+}
