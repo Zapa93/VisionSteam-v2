@@ -1,3 +1,4 @@
+
 import { EPGData, EPGProgram } from '../types';
 
 // XMLTV Date Format: YYYYMMDDHHMMSS +/-HHMM (e.g. 20231027183000 +0200)
@@ -38,56 +39,71 @@ export const fetchEPG = async (url: string): Promise<EPGData> => {
     const response = await fetch(url);
     if (!response.ok) throw new Error('EPG Fetch Failed');
     const text = await response.text();
+    console.log("EPG Text received, length:", text.length);
     
     // Regex parsing is often faster than DOMParser for huge XML files on constrained devices
     const epgData: EPGData = {};
     const now = new Date();
-    const futureLimit = new Date(now.getTime() + 24 * 60 * 60 * 1000); // Only keep next 24h to save memory
+    // Keep past 2 hours for "catch up" visual context, and future 24h
+    const pastLimit = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+    const futureLimit = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
-    // Match <programme> tags
-    // This simple regex approach assumes well-formed XML attributes
-    // <programme start="2023..." stop="2023..." channel="ID">
-    //   <title...>...</title>
-    //   <desc...>...</desc>
-    // </programme>
-    const programRegex = /<programme[^>]*start="([^"]*)"[^>]*stop="([^"]*)"[^>]*channel="([^"]*)"[^>]*>([\s\S]*?)<\/programme>/g;
+    // Strategy: Match the entire <programme> block first, then extract attributes independently
+    // This solves the issue where attributes might be in different orders (start, stop, channel)
+    const programBlockRegex = /<programme([\s\S]*?)>([\s\S]*?)<\/programme>/g;
+    
+    // Attribute extractors
+    const startRegex = /start="([^"]*)"/;
+    const stopRegex = /stop="([^"]*)"/;
+    const channelRegex = /channel="([^"]*)"/;
+    
+    // Content extractors
     const titleRegex = /<title[^>]*>([^<]*)<\/title>/;
     const descRegex = /<desc[^>]*>([\s\S]*?)<\/desc>/;
 
     let match;
-    while ((match = programRegex.exec(text)) !== null) {
-        const startStr = match[1];
-        const stopStr = match[2];
-        const channelId = match[3];
-        const innerContent = match[4];
+    let count = 0;
+    while ((match = programBlockRegex.exec(text)) !== null) {
+        const attributesPart = match[1];
+        const innerContent = match[2];
 
-        const start = parseXMLTVDate(startStr);
-        const end = parseXMLTVDate(stopStr);
+        const channelMatch = channelRegex.exec(attributesPart);
+        const startMatch = startRegex.exec(attributesPart);
+        const stopMatch = stopRegex.exec(attributesPart);
 
-        if (start && end) {
-            // Optimization: Skip old programs
-            if (end < now) continue;
-            // Optimization: Skip too far future
-            if (start > futureLimit) continue;
+        if (channelMatch && startMatch && stopMatch) {
+            const channelId = channelMatch[1];
+            const start = parseXMLTVDate(startMatch[1]);
+            const end = parseXMLTVDate(stopMatch[1]);
 
-            const titleMatch = titleRegex.exec(innerContent);
-            const descMatch = descRegex.exec(innerContent);
-            
-            const program: EPGProgram = {
-                id: channelId,
-                title: titleMatch ? titleMatch[1] : 'No Title',
-                description: descMatch ? descMatch[1] : '',
-                start,
-                end
-            };
+            if (start && end) {
+                // Optimization: Skip old programs
+                if (end < pastLimit) continue;
+                // Optimization: Skip too far future
+                if (start > futureLimit) continue;
 
-            if (!epgData[channelId]) {
-                epgData[channelId] = [];
+                const titleMatch = titleRegex.exec(innerContent);
+                const descMatch = descRegex.exec(innerContent);
+                
+                const program: EPGProgram = {
+                    id: channelId,
+                    title: titleMatch ? titleMatch[1] : 'No Title',
+                    description: descMatch ? descMatch[1] : '',
+                    start,
+                    end
+                };
+
+                if (!epgData[channelId]) {
+                    epgData[channelId] = [];
+                }
+                epgData[channelId].push(program);
+                count++;
             }
-            epgData[channelId].push(program);
         }
     }
     
+    console.log(`Parsed ${count} programs for ${Object.keys(epgData).length} channels`);
+
     // Sort programs by time
     Object.keys(epgData).forEach(key => {
         epgData[key].sort((a, b) => a.start.getTime() - b.start.getTime());
@@ -105,4 +121,11 @@ export const getCurrentProgram = (programs: EPGProgram[] | undefined): EPGProgra
     if (!programs) return null;
     const now = new Date();
     return programs.find(p => now >= p.start && now < p.end) || null;
+};
+
+export const getNextProgram = (programs: EPGProgram[] | undefined): EPGProgram | null => {
+    if (!programs) return null;
+    const now = new Date();
+    // Find the first program that starts after now
+    return programs.find(p => p.start > now) || null;
 };

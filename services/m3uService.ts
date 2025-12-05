@@ -1,3 +1,4 @@
+
 import { Channel, ChannelGroup } from '../types';
 
 const generateFallbackLogo = (name: string): string => {
@@ -15,7 +16,7 @@ const extractAttribute = (line: string, key: string): string | null => {
   const regex = new RegExp(`${key}=("([^"]*)"|'([^']*)'|([^\\s,]*))`, 'i');
   const match = line.match(regex);
   if (!match) return null;
-  return match[2] || match[3] || match[4] || '';
+  return (match[2] || match[3] || match[4] || '').trim();
 };
 
 export const parseM3U = (content: string): { groups: ChannelGroup[], epgUrl: string | null } => {
@@ -25,14 +26,19 @@ export const parseM3U = (content: string): { groups: ChannelGroup[], epgUrl: str
   
   let currentChannel: Partial<Channel> = {};
 
-  lines.forEach((line, index) => {
+  // Scan first 5 lines for #EXTM3U header to find x-tvg-url or url-tvg
+  // Some files have empty lines at start or BOM
+  for (let i = 0; i < Math.min(lines.length, 5); i++) {
+     const line = lines[i].trim();
+     if (line.startsWith('#EXTM3U')) {
+        epgUrl = extractAttribute(line, 'url-tvg') || extractAttribute(line, 'x-tvg-url');
+        if (epgUrl) break;
+     }
+  }
+
+  lines.forEach((line) => {
     const trimmedLine = line.trim();
     if (!trimmedLine) return;
-
-    // Check header for EPG URL
-    if (index === 0 && trimmedLine.startsWith('#EXTM3U')) {
-       epgUrl = extractAttribute(trimmedLine, 'url-tvg') || extractAttribute(trimmedLine, 'x-tvg-url');
-    }
 
     if (trimmedLine.startsWith('#EXTINF:')) {
       // Extract Display Name

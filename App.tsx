@@ -19,6 +19,7 @@ interface FlatItem {
   data?: Channel;
   title?: string;
   index: number; 
+  channelNumber?: number;
 }
 
 const App: React.FC = () => {
@@ -68,6 +69,7 @@ const App: React.FC = () => {
   const { items: flatItems, totalHeight } = useMemo(() => {
     const items: FlatItem[] = [];
     let currentTop = 0;
+    let channelCounter = 1;
     
     playlist.forEach(group => {
       if (group.channels.length === 0) return;
@@ -92,7 +94,8 @@ const App: React.FC = () => {
           data: channel,
           top: currentTop,
           height: CHANNEL_HEIGHT,
-          index: items.length
+          index: items.length,
+          channelNumber: channelCounter++
         });
         currentTop += CHANNEL_HEIGHT;
       });
@@ -118,6 +121,8 @@ const App: React.FC = () => {
       if (item) {
         const currentScroll = scrollRef.current.scrollTop;
         const viewH = scrollRef.current.clientHeight;
+        // Logic modified to avoid fighting mouse scroll if item is already visible
+        // Only scroll if strictly out of bounds
         if (item.top < currentScroll) {
             scrollRef.current.scrollTo({ top: item.top, behavior: 'auto' });
         } else if (item.top + item.height > currentScroll + viewH) {
@@ -248,11 +253,23 @@ const App: React.FC = () => {
         }
 
         const isFocused = activeSection === 'list' && focusedIndex === item.index;
+        
+        // EPG Info
         const currentProg = item.data?.tvgId ? getCurrentProgram(epgData[item.data.tvgId]) : null;
+        let itemProgress = 0;
+        if (currentProg) {
+            const t = currentProg.end.getTime() - currentProg.start.getTime();
+            const e = new Date().getTime() - currentProg.start.getTime();
+            itemProgress = Math.min(100, Math.max(0, (e / t) * 100));
+        }
 
         return (
             <div
                 key={item.id}
+                onMouseEnter={() => {
+                  setFocusedIndex(item.index);
+                  setActiveSection('list');
+                }}
                 onClick={() => {
                     setFocusedIndex(item.index);
                     setActiveSection('list');
@@ -262,7 +279,7 @@ const App: React.FC = () => {
                 className={`group px-4 py-1.5 cursor-pointer transition-transform duration-75 ${isFocused ? 'z-10' : 'z-0'}`}
             >
                 <div className={`w-full h-full rounded-xl flex items-center gap-0 pl-0 pr-5 border overflow-hidden ${isFocused ? 'bg-[#111] border-white border-2 scale-[1.01]' : 'bg-[#111] border-white/5 hover:bg-white/5'}`}>
-                    <div className="h-full w-[140px] bg-black/40 flex items-center justify-center shrink-0 border-r border-white/5 p-2">
+                    <div className="h-full w-[140px] bg-white flex items-center justify-center shrink-0 border-r border-white/5 p-2">
                          <img 
                            src={item.data?.logo} 
                            className="w-full h-full object-contain"
@@ -271,16 +288,31 @@ const App: React.FC = () => {
                          />
                     </div>
                     <div className="flex-1 min-w-0 pl-6 flex flex-col justify-center">
-                        <p className={`text-xl font-semibold truncate ${isFocused ? 'text-white' : 'text-gray-300'}`}>
-                            {item.data?.name}
-                        </p>
-                        {currentProg && (
-                           <p className="text-sm text-gray-400 truncate mt-0.5">
-                             <span className="text-gray-500 mr-2">
-                               {currentProg.start.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - {currentProg.end.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                             </span>
-                             {currentProg.title}
-                           </p>
+                        <div className="flex items-baseline gap-3 mb-1">
+                            <span className={`text-lg font-mono opacity-50 ${isFocused ? 'text-white' : 'text-gray-500'}`}>
+                                {item.channelNumber}
+                            </span>
+                            <p className={`text-xl font-semibold truncate ${isFocused ? 'text-white' : 'text-gray-300'}`}>
+                                {item.data?.name}
+                            </p>
+                        </div>
+                        {/* EPG DISPLAY */}
+                        {currentProg ? (
+                           <div className="flex flex-col gap-1 pl-10">
+                             <div className="flex justify-between items-baseline pr-4">
+                                <span className={`text-sm truncate ${isFocused ? 'text-gray-200' : 'text-gray-400'}`}>
+                                    {currentProg.title}
+                                </span>
+                                <span className="text-xs text-gray-500 whitespace-nowrap ml-2">
+                                  {currentProg.start.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - {currentProg.end.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                </span>
+                             </div>
+                             <div className="h-1 w-2/3 bg-white/10 rounded-full overflow-hidden">
+                                <div className="h-full bg-purple-500" style={{ width: `${itemProgress}%` }}></div>
+                             </div>
+                           </div>
+                        ) : (
+                           <p className="text-sm text-gray-600 pl-10">No Program Info</p>
                         )}
                     </div>
                 </div>
