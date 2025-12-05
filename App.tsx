@@ -1,14 +1,15 @@
+
 import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { VideoPlayer } from './components/VideoPlayer';
 import { fetchPlaylist } from './services/m3uService';
-import { Category, Channel, PlaylistData } from './types';
+import { fetchEPG, getCurrentProgram } from './services/epgService';
+import { Category, Channel, PlaylistData, EPGData } from './types';
 import { ENTERTAINMENT_URL, SPORT_URL, DEFAULT_LOGO } from './constants';
 
 // --- CONSTANTS FOR VIRTUALIZATION ---
-const CHANNEL_HEIGHT = 64; // px
-const HEADER_HEIGHT = 42; // px
-const RENDER_BUFFER = 5; // items above/below
+const CHANNEL_HEIGHT = 90; // px
+const HEADER_HEIGHT = 50; // px
 
 interface FlatItem {
   type: 'header' | 'channel';
@@ -17,7 +18,7 @@ interface FlatItem {
   height: number;
   data?: Channel;
   title?: string;
-  index: number; // index in the flat array
+  index: number; 
 }
 
 const App: React.FC = () => {
@@ -25,6 +26,9 @@ const App: React.FC = () => {
   const [playlist, setPlaylist] = useState<PlaylistData>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null);
+  
+  // EPG State
+  const [epgData, setEpgData] = useState<EPGData>({});
   
   // --- VIRTUAL LIST STATE ---
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -35,33 +39,40 @@ const App: React.FC = () => {
   const [activeSection, setActiveSection] = useState<'sidebar' | 'list'>('sidebar');
   const [focusedIndex, setFocusedIndex] = useState<number>(-1);
 
-  // Load Playlist
+  // Load Playlist & EPG
   useEffect(() => {
     const loadData = async () => {
       setLoading(true);
       setPlaylist([]);
+      setEpgData({});
+      
       const url = activeCategory === Category.KANALER ? ENTERTAINMENT_URL : SPORT_URL;
-      const data = await fetchPlaylist(url);
-      setPlaylist(data);
+      const { groups, epgUrl } = await fetchPlaylist(url);
+      setPlaylist(groups);
       setLoading(false);
-      // Reset focus when category changes
+      
+      // Reset focus
       setActiveSection('sidebar');
       setFocusedIndex(-1);
+
+      // Fetch EPG if URL is present
+      if (epgUrl) {
+          console.log("Found EPG URL:", epgUrl);
+          fetchEPG(epgUrl).then(data => setEpgData(data));
+      }
     };
     loadData();
   }, [activeCategory]);
 
-  // --- DATA FLATTENING (Memoized for Performance) ---
+  // --- DATA FLATTENING ---
   const { items: flatItems, totalHeight } = useMemo(() => {
     const items: FlatItem[] = [];
     let currentTop = 0;
     
     playlist.forEach(group => {
       if (group.channels.length === 0) return;
-      
       const isUncategorized = group.title.toLowerCase() === 'uncategorized';
       
-      // Add Header
       if (!isUncategorized) {
          items.push({
            type: 'header',
@@ -74,7 +85,6 @@ const App: React.FC = () => {
          currentTop += HEADER_HEIGHT;
       }
       
-      // Add Channels
       group.channels.forEach(channel => {
         items.push({
           type: 'channel',
@@ -93,30 +103,21 @@ const App: React.FC = () => {
 
   // --- MEASURE CONTAINER ---
   useEffect(() => {
-    if (scrollRef.current) {
-        setContainerHeight(scrollRef.current.clientHeight);
-    }
-    const handleResize = () => {
-        if (scrollRef.current) setContainerHeight(scrollRef.current.clientHeight);
-    };
+    if (scrollRef.current) setContainerHeight(scrollRef.current.clientHeight);
+    const handleResize = () => { if (scrollRef.current) setContainerHeight(scrollRef.current.clientHeight); };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // --- SCROLL HANDLER ---
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    setScrollTop(e.currentTarget.scrollTop);
-  };
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => setScrollTop(e.currentTarget.scrollTop);
 
   // --- SCROLL TO FOCUS ---
   useEffect(() => {
     if (activeSection === 'list' && focusedIndex !== -1 && scrollRef.current) {
       const item = flatItems[focusedIndex];
       if (item) {
-        // Simple Viewport Check
         const currentScroll = scrollRef.current.scrollTop;
         const viewH = scrollRef.current.clientHeight;
-        
         if (item.top < currentScroll) {
             scrollRef.current.scrollTo({ top: item.top, behavior: 'auto' });
         } else if (item.top + item.height > currentScroll + viewH) {
@@ -128,56 +129,42 @@ const App: React.FC = () => {
 
   // --- KEYBOARD NAVIGATION ENGINE ---
   useEffect(() => {
-    if (selectedChannel) return; // Disable when player is open
+    if (selectedChannel) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (loading) return;
-      
-      const isNav = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(e.key);
+      // Focus Rescue
+      if (!document.activeElement || document.activeElement === document.body) {
+         const btn = document.querySelector(`[data-sidebar-item="${activeCategory}"]`) as HTMLElement;
+         btn?.focus();
+      }
+
+      const isNav = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'PageUp', 'PageDown'].includes(e.key);
       if (!isNav) return;
 
       if (activeSection === 'sidebar') {
-        // --- SIDEBAR NAVIGATION ---
         if (e.key === 'ArrowRight') {
            e.preventDefault();
-           // Switch to List
            setActiveSection('list');
-           
-           // If no focus yet, find first channel
            if (focusedIndex === -1) {
               const firstChannelIdx = flatItems.findIndex(i => i.type === 'channel');
               setFocusedIndex(firstChannelIdx !== -1 ? firstChannelIdx : 0);
            }
-           // Explicitly blur sidebar button to remove native focus ring
            (document.activeElement as HTMLElement)?.blur();
            return;
         }
-        
-        // Manual Up/Down for Sidebar to guarantee navigation
         if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
             e.preventDefault();
             const categories = Object.values(Category);
-            const currentVal = document.activeElement?.getAttribute('data-sidebar-item');
-            
-            // Find current index
-            let idx = categories.findIndex(c => c === currentVal);
-            
-            // Fallback if focus is lost
-            if (idx === -1) idx = categories.indexOf(activeCategory);
-            
+            let idx = categories.indexOf(activeCategory);
             if (e.key === 'ArrowDown') idx++;
             if (e.key === 'ArrowUp') idx--;
-            
-            // Clamp
             if (idx < 0) idx = 0;
             if (idx >= categories.length) idx = categories.length - 1;
-            
             const targetCat = categories[idx];
             const btn = document.querySelector(`[data-sidebar-item="${targetCat}"]`) as HTMLElement;
             btn?.focus();
         }
-
-        // Manual Enter support
         if (e.key === 'Enter') {
             const currentVal = document.activeElement?.getAttribute('data-sidebar-item');
             if (currentVal && currentVal !== activeCategory) {
@@ -185,21 +172,16 @@ const App: React.FC = () => {
                setActiveCategory(currentVal as Category);
             }
         }
-
       } else {
-        // --- LIST NAVIGATION ---
-        e.preventDefault(); // Stop native scrolling
-        
+        e.preventDefault();
         if (e.key === 'ArrowLeft') {
            setActiveSection('sidebar');
-           // Focus the active category button
            setTimeout(() => {
               const btn = document.querySelector(`[data-sidebar-item="${activeCategory}"]`) as HTMLElement;
               btn?.focus();
            }, 0);
            return;
         }
-
         if (e.key === 'Enter') {
             const item = flatItems[focusedIndex];
             if (item && item.type === 'channel' && item.data) {
@@ -209,24 +191,16 @@ const App: React.FC = () => {
         }
 
         let nextIndex = focusedIndex;
-        if (e.key === 'ArrowUp') {
-            nextIndex--;
-        } else if (e.key === 'ArrowDown') {
-            nextIndex++;
-        }
+        if (e.key === 'ArrowUp') nextIndex--;
+        else if (e.key === 'ArrowDown') nextIndex++;
+        else if (e.key === 'PageUp') nextIndex += 5;
+        else if (e.key === 'PageDown') nextIndex -= 5;
 
-        // Bounds check
         if (nextIndex < 0) nextIndex = 0;
         if (nextIndex >= flatItems.length) nextIndex = flatItems.length - 1;
-
-        // Skip Headers logic (optional, but good UX to skip selecting headers)
-        // If landing on header, move one more step
         if (flatItems[nextIndex].type === 'header') {
-            if (e.key === 'ArrowDown') nextIndex++;
-            if (e.key === 'ArrowUp') nextIndex--;
+            if (nextIndex > focusedIndex) nextIndex++; else nextIndex--;
         }
-        
-        // Final Bounds check
         if (nextIndex < 0) nextIndex = 0;
         if (nextIndex >= flatItems.length) nextIndex = flatItems.length - 1;
 
@@ -238,24 +212,11 @@ const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeSection, focusedIndex, flatItems, loading, selectedChannel, activeCategory]);
 
-  // --- INITIAL FOCUS ON LOAD ---
-  useEffect(() => {
-    if (!loading && !selectedChannel && activeSection === 'sidebar') {
-        setTimeout(() => {
-           const btn = document.querySelector(`[data-sidebar-item="${activeCategory}"]`) as HTMLElement;
-           btn?.focus();
-        }, 100);
-    }
-  }, [loading, selectedChannel, activeCategory]);
-
   // --- RENDER HELPERS ---
   const renderVirtualItems = () => {
     if (loading || flatItems.length === 0) return null;
 
-    // Binary search or simple math to find start index
-    // Since variable heights, linear scan is safer and fast enough for <5000 items on JS engine
     let startIndex = 0;
-    // Optimization: Use binary search for start index
     let low = 0, high = flatItems.length - 1;
     while (low <= high) {
         const mid = Math.floor((low + high) / 2);
@@ -267,12 +228,9 @@ const App: React.FC = () => {
     }
     startIndex = Math.max(0, low);
     
-    // Find End Index
     let endIndex = startIndex;
     for (let i = startIndex; i < flatItems.length; i++) {
-        if (flatItems[i].top > scrollTop + containerHeight + 100) {
-            break;
-        }
+        if (flatItems[i].top > scrollTop + containerHeight + 100) break;
         endIndex = i;
     }
 
@@ -281,21 +239,16 @@ const App: React.FC = () => {
             return (
                 <div
                     key={item.id}
-                    style={{
-                        position: 'absolute',
-                        top: item.top,
-                        left: 0,
-                        right: 0,
-                        height: item.height
-                    }}
-                    className="flex items-center px-4 bg-[#050505] border-b border-white/5 z-0"
+                    style={{ position: 'absolute', top: item.top, left: 0, right: 0, height: item.height }}
+                    className="flex items-center px-6 bg-[#050505] border-b border-white/5 z-0"
                 >
-                    <span className="text-purple-400 text-xs font-bold uppercase tracking-wider">{item.title}</span>
+                    <span className="text-purple-400 text-sm font-bold uppercase tracking-wider">{item.title}</span>
                 </div>
             );
         }
 
         const isFocused = activeSection === 'list' && focusedIndex === item.index;
+        const currentProg = item.data?.tvgId ? getCurrentProgram(epgData[item.data.tvgId]) : null;
 
         return (
             <div
@@ -305,36 +258,30 @@ const App: React.FC = () => {
                     setActiveSection('list');
                     if (item.data) setSelectedChannel(item.data);
                 }}
-                style={{
-                    position: 'absolute',
-                    top: item.top,
-                    left: 0,
-                    right: 0,
-                    height: item.height
-                }}
-                className={`group px-2 py-1 cursor-pointer transition-transform duration-75 ${isFocused ? 'z-10' : 'z-0'}`}
+                style={{ position: 'absolute', top: item.top, left: 0, right: 0, height: item.height }}
+                className={`group px-4 py-1.5 cursor-pointer transition-transform duration-75 ${isFocused ? 'z-10' : 'z-0'}`}
             >
-                <div 
-                    className={`
-                        w-full h-full rounded-lg flex items-center gap-4 px-3 border
-                        ${isFocused 
-                            ? 'bg-[#111] border-white border-2 scale-[1.01]' 
-                            : 'bg-[#111] border-white/5 hover:bg-white/5'
-                        }
-                    `}
-                >
-                    <div className="w-10 h-8 bg-black/40 rounded flex items-center justify-center shrink-0">
+                <div className={`w-full h-full rounded-xl flex items-center gap-0 pl-0 pr-5 border overflow-hidden ${isFocused ? 'bg-[#111] border-white border-2 scale-[1.01]' : 'bg-[#111] border-white/5 hover:bg-white/5'}`}>
+                    <div className="h-full w-[140px] bg-black/40 flex items-center justify-center shrink-0 border-r border-white/5 p-2">
                          <img 
                            src={item.data?.logo} 
-                           className="max-w-full max-h-full object-contain"
+                           className="w-full h-full object-contain"
                            loading="lazy"
                            onError={(e) => (e.target as HTMLImageElement).src = DEFAULT_LOGO}
                          />
                     </div>
-                    <div className="flex-1 min-w-0">
-                        <p className={`text-sm font-medium truncate ${isFocused ? 'text-white' : 'text-gray-300'}`}>
+                    <div className="flex-1 min-w-0 pl-6 flex flex-col justify-center">
+                        <p className={`text-xl font-semibold truncate ${isFocused ? 'text-white' : 'text-gray-300'}`}>
                             {item.data?.name}
                         </p>
+                        {currentProg && (
+                           <p className="text-sm text-gray-400 truncate mt-0.5">
+                             <span className="text-gray-500 mr-2">
+                               {currentProg.start.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - {currentProg.end.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                             </span>
+                             {currentProg.title}
+                           </p>
+                        )}
                     </div>
                 </div>
             </div>
@@ -342,14 +289,9 @@ const App: React.FC = () => {
     });
   };
 
-  // Sticky Header Logic
   const currentHeader = useMemo(() => {
      if (flatItems.length === 0) return null;
-     // Find the last header that is above the scroll top
-     // We can search backwards from the first visible item
      let idx = 0;
-     // Quick optimization: look near the focused index or scrollTop
-     // Simple scan:
      for (let i = 0; i < flatItems.length; i++) {
         if (flatItems[i].top > scrollTop + HEADER_HEIGHT) break;
         if (flatItems[i].type === 'header') idx = i;
@@ -357,52 +299,38 @@ const App: React.FC = () => {
      return flatItems[idx]?.type === 'header' ? flatItems[idx] : null;
   }, [scrollTop, flatItems]);
 
-  // Stable Handler for Close
-  const handleClosePlayer = useCallback(() => {
-     setSelectedChannel(null);
-  }, []);
+  const handleClosePlayer = useCallback(() => setSelectedChannel(null), []);
 
   return (
     <div className="flex h-screen w-screen bg-[#050505] text-white font-sans overflow-hidden">
       <Sidebar 
         activeCategory={activeCategory} 
         onSelectCategory={setActiveCategory} 
+        allChannels={playlist.flatMap(g => g.channels)}
       />
 
       <div className="flex-1 flex flex-col h-full relative z-0">
-        <header className="h-20 px-8 flex items-center justify-between border-b border-white/5 bg-[#0a0a0a] z-20 shadow-sm shrink-0">
+        <header className="h-24 px-8 flex items-center justify-between border-b border-white/5 bg-[#0a0a0a] z-20 shadow-sm shrink-0">
           <div>
-            <h2 className="text-2xl font-bold text-white tracking-tight">{activeCategory}</h2>
-            <p className="text-gray-400 text-xs mt-0.5">
+            <h2 className="text-3xl font-bold text-white tracking-tight">{activeCategory}</h2>
+            <p className="text-gray-400 text-sm mt-1">
               {loading ? 'Loading...' : `${flatItems.filter(i => i.type === 'channel').length} channels`}
             </p>
           </div>
         </header>
 
-        {/* VIRTUAL SCROLL CONTAINER */}
-        <div 
-          ref={scrollRef}
-          onScroll={handleScroll}
-          className="flex-1 overflow-y-auto relative no-scrollbar"
-        >
+        <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto relative no-scrollbar">
           {loading ? (
              <div className="p-6 space-y-3">
-              {[...Array(10)].map((_, i) => (
-                <div key={i} className="h-14 w-full bg-white/5 rounded-lg animate-pulse" />
-              ))}
+              {[...Array(8)].map((_, i) => <div key={i} className="h-20 w-full bg-white/5 rounded-lg animate-pulse" />)}
             </div>
           ) : (
             <>
-                {/* Virtual Height Placeholder */}
                 <div style={{ height: totalHeight, width: '100%' }} />
-                
-                {/* Rendered Window */}
                 {renderVirtualItems()}
-
-                {/* Sticky Header Overlay */}
                 {currentHeader && (
-                    <div className="sticky top-0 left-0 right-0 h-[42px] px-4 flex items-center bg-[#050505]/95 backdrop-blur-sm border-b border-white/5 z-20 shadow-md">
-                        <span className="text-purple-400 text-xs font-bold uppercase tracking-wider">{currentHeader.title}</span>
+                    <div className="sticky top-0 left-0 right-0 h-[50px] px-6 flex items-center bg-[#050505]/95 backdrop-blur-sm border-b border-white/5 z-20 shadow-md">
+                        <span className="text-purple-400 text-sm font-bold uppercase tracking-wider">{currentHeader.title}</span>
                     </div>
                 )}
             </>
@@ -414,6 +342,7 @@ const App: React.FC = () => {
         <VideoPlayer 
           channel={selectedChannel} 
           allChannels={playlist.flatMap(g => g.channels)}
+          epgData={epgData}
           onChannelSelect={setSelectedChannel}
           onClose={handleClosePlayer} 
         />

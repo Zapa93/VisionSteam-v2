@@ -4,6 +4,7 @@ export interface Channel {
   logo: string;
   group: string;
   url: string;
+  tvgId?: string;
 }
 
 export interface ChannelGroup {
@@ -17,3 +18,15 @@ export enum Category {
 }
 
 export type PlaylistData = ChannelGroup[];
+
+export interface EPGProgram {
+  id: string; // tvg-id
+  title: string;
+  description: string;
+  start: Date;
+  end: Date;
+}
+
+export interface EPGData {
+  [tvgId: string]: EPGProgram[];
+}

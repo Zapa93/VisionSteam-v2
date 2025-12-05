@@ -1,7 +1,8 @@
 
+
 // Configuration requested by user
 export const SPORT_URL = "https://gist.githubusercontent.com/Zapa93/e39fcebf68483ca19b08d786b000c872/raw/ddb0e2d714e14039f8ba3f1959ff352937b0c39d/sport.m3u";
-export const ENTERTAINMENT_URL = "https://gist.githubusercontent.com/Zapa93/73d9f0c700be4c1756d71936174c05a5/raw/70f634dba9bb613e57403cf777f4b6177f2f00a7/entertainment.m3u";
+export const ENTERTAINMENT_URL = "https://gist.githubusercontent.com/Zapa93/84f45626c1865d9fe783dbc690144c7c/raw/1fa8d95f40b6d370c699e49651b0e2cc3aa852a4/edited.m3u";
 
 // Use a simple transparent pixel or a generic TV svg as absolute fallback
 // But the service will mostly generate avatars.

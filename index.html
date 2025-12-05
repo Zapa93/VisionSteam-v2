@@ -24,11 +24,21 @@
             },
             animation: {
               'fade-in': 'fadeIn 0.3s ease-out',
+              'satisfy-spin': 'rotate 2s linear infinite',
+              'satisfy-dash': 'dash 1.5s ease-in-out infinite',
             },
             keyframes: {
               fadeIn: {
                 '0%': { opacity: '0' },
                 '100%': { opacity: '1' },
+              },
+              rotate: {
+                '100%': { transform: 'rotate(360deg)' },
+              },
+              dash: {
+                '0%': { strokeDasharray: '1, 150', strokeDashoffset: '0' },
+                '50%': { strokeDasharray: '90, 150', strokeDashoffset: '-35' },
+                '100%': { strokeDasharray: '90, 150', strokeDashoffset: '-124' },
               }
             }
           },
@@ -85,7 +95,8 @@
     "react/": "https://aistudiocdn.com/react@^19.2.1/",
     "vite": "https://aistudiocdn.com/vite@^7.2.6",
     "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.1",
-    "path": "https://aistudiocdn.com/path@^0.12.7"
+    "path": "https://aistudiocdn.com/path@^0.12.7",
+    "@google/genai": "https://esm.run/@google/genai"
   }
 }
 </script>
