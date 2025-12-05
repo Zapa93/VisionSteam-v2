@@ -1,5 +1,4 @@
 
-
 import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { VideoPlayer } from './components/VideoPlayer';
@@ -272,16 +271,22 @@ const App: React.FC = () => {
                   setFocusedIndex(item.index);
                   setActiveSection('list');
                 }}
+                onMouseMove={() => {
+                   if (activeSection !== 'list' || focusedIndex !== item.index) {
+                      setFocusedIndex(item.index);
+                      setActiveSection('list');
+                   }
+                }}
                 onClick={() => {
                     setFocusedIndex(item.index);
                     setActiveSection('list');
                     if (item.data) setSelectedChannel(item.data);
                 }}
                 style={{ position: 'absolute', top: item.top, left: 0, right: 0, height: item.height }}
-                className={`group px-4 py-1.5 cursor-pointer transition-transform duration-75 ${isFocused ? 'z-10' : 'z-0'}`}
+                className={`group px-4 py-1.5 cursor-pointer ${isFocused ? 'z-10' : 'z-0'}`}
             >
-                <div className={`w-full h-full rounded-xl flex items-center gap-0 pl-0 pr-5 border overflow-hidden ${isFocused ? 'bg-[#111] border-white border-2 scale-[1.01]' : 'bg-[#111] border-white/5 hover:bg-white/5'}`}>
-                    <div className="h-full w-[140px] bg-white flex items-center justify-center shrink-0 border-r border-white/5 p-2">
+                <div className={`w-full h-full rounded-xl flex items-center gap-0 pl-0 pr-5 border overflow-hidden ${isFocused ? 'bg-[#111] border-white border-2' : 'bg-[#111] border-white/5 hover:bg-white/5'}`}>
+                    <div className="h-full w-[140px] bg-gray-300 flex items-center justify-center shrink-0 border-r border-white/5 p-2">
                          <img 
                            src={item.data?.logo} 
                            className="w-full h-full object-contain"
@@ -306,7 +311,7 @@ const App: React.FC = () => {
                                     {currentProg.title}
                                 </span>
                                 <span className="text-xs text-gray-500 whitespace-nowrap ml-2">
-                                  {currentProg.start.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - {currentProg.end.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                  {currentProg.start.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', hour12: false})} - {currentProg.end.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', hour12: false})}
                                 </span>
                              </div>
                              <div className="h-1 w-2/3 bg-white/10 rounded-full overflow-hidden">
@@ -341,6 +346,8 @@ const App: React.FC = () => {
         activeCategory={activeCategory} 
         onSelectCategory={setActiveCategory} 
         allChannels={playlist.flatMap(g => g.channels)}
+        epgData={epgData}
+        onChannelSelect={setSelectedChannel}
       />
 
       <div className="flex-1 flex flex-col h-full relative z-0">
@@ -356,14 +363,14 @@ const App: React.FC = () => {
         <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto relative no-scrollbar">
           {loading ? (
              <div className="p-6 space-y-3">
-              {[...Array(8)].map((_, i) => <div key={i} className="h-20 w-full bg-white/5 rounded-lg animate-pulse" />)}
+              {[...Array(8)].map((_, i) => <div key={i} className="h-20 w-full bg-white/5 rounded-lg opacity-50" />)}
             </div>
           ) : (
             <>
                 <div style={{ height: totalHeight, width: '100%' }} />
                 {renderVirtualItems()}
                 {currentHeader && (
-                    <div className="sticky top-0 left-0 right-0 h-[50px] px-6 flex items-center bg-[#050505]/95 backdrop-blur-sm border-b border-white/5 z-20 shadow-md">
+                    <div className="sticky top-0 left-0 right-0 h-[50px] px-6 flex items-center bg-[#050505] border-b border-white/5 z-20 shadow-md">
                         <span className="text-purple-400 text-sm font-bold uppercase tracking-wider">{currentHeader.title}</span>
                     </div>
                 )}
