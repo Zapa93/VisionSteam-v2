@@ -1,11 +1,12 @@
 
+
 import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { VideoPlayer } from './components/VideoPlayer';
 import { fetchPlaylist } from './services/m3uService';
 import { fetchEPG, getCurrentProgram } from './services/epgService';
 import { Category, Channel, PlaylistData, EPGData } from './types';
-import { ENTERTAINMENT_URL, SPORT_URL, DEFAULT_LOGO } from './constants';
+import { ENTERTAINMENT_URL, SPORT_URL, DEFAULT_LOGO, MANUAL_EPG_URL } from './constants';
 
 // --- CONSTANTS FOR VIRTUALIZATION ---
 const CHANNEL_HEIGHT = 90; // px
@@ -56,10 +57,11 @@ const App: React.FC = () => {
       setActiveSection('sidebar');
       setFocusedIndex(-1);
 
-      // Fetch EPG if URL is present
-      if (epgUrl) {
-          console.log("Found EPG URL:", epgUrl);
-          fetchEPG(epgUrl).then(data => setEpgData(data));
+      // Fetch EPG: Prioritize Manual URL if present
+      const epgSource = MANUAL_EPG_URL || epgUrl;
+      if (epgSource) {
+          console.log("Fetching EPG from:", epgSource);
+          fetchEPG(epgSource).then(data => setEpgData(data));
       }
     };
     loadData();
