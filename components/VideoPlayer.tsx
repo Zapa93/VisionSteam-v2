@@ -298,13 +298,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
           }
       } else if (isUp) {
         e.preventDefault(); e.stopPropagation();
-        if (!currentIsListOpen) setIsListOpen(true);
+        if (!currentIsListOpen) {
+             setIsListOpen(true);
+             setViewMode('channels'); // Ensure we start in channels view
+        }
         else if (currentFocus === 'list') {
             setSelectedIndex(prev => Math.max(0, prev - 1));
         }
       } else if (isDown) {
         e.preventDefault(); e.stopPropagation();
-        if (!currentIsListOpen) setIsListOpen(true);
+        if (!currentIsListOpen) {
+            setIsListOpen(true);
+            setViewMode('channels'); // Ensure we start in channels view
+        }
         else if (currentFocus === 'list') {
             setSelectedIndex(prev => Math.min(activeListLength - 1, prev + 1));
         }
@@ -352,6 +358,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
           }
         } else {
           setIsListOpen(true);
+          setViewMode('channels'); // Ensure we start in channels view
         }
       }
     };
@@ -503,7 +510,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
         autoPlay 
         playsInline 
         onClick={() => {
-           if (!isListOpen) setIsListOpen(true);
+           if (!isListOpen) {
+               setIsListOpen(true);
+               setViewMode('channels');
+           }
         }}
       />
 
@@ -528,29 +538,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
 
       {/* LIST MODAL */}
       <div 
-        className={`fixed inset-0 z-40 flex items-center justify-center ${isListOpen ? 'visible' : 'invisible'}`}
+        className={`fixed inset-0 z-40 items-center justify-center ${isListOpen ? 'flex' : 'hidden'}`}
         onClick={() => setIsListOpen(false)}
       >
         <div 
             className="w-[1100px] h-[900px] bg-[#111] rounded-3xl border border-white/10 shadow-2xl flex flex-col overflow-hidden"
             onClick={(e) => e.stopPropagation()}
         >
-            {/* Header */}
-            <div className="p-6 border-b border-white/10 bg-white/5 flex justify-between items-center shrink-0">
-                <h2 className="text-4xl font-bold text-white tracking-tight">
-                    {viewMode === 'groups' ? 'All Groups' : (currentGroup?.title || 'Channels')}
-                </h2>
-                <span className="text-xl font-medium text-gray-400 bg-black/40 px-4 py-2 rounded-lg">
-                    {viewMode === 'groups' ? playlist.length : currentChannelList.length} Items
-                </span>
-            </div>
-            
             <div className="flex flex-1 overflow-hidden">
                 {/* SIDEBAR FOR SWITCHING GROUPS */}
                 {viewMode === 'channels' && (
                     <div className="w-[200px] bg-black/20 border-r border-white/5 p-2 flex flex-col gap-2 shrink-0">
                         <div 
-                            className={`p-4 rounded-xl border border-white/10 text-center cursor-pointer transition-all ${focusArea === 'sidebar' ? 'bg-purple-600 text-white border-white scale-105 shadow-lg' : 'bg-white/5 text-gray-400 hover:bg-white/10'}`}
+                            className={`p-4 rounded-xl border border-white/10 text-center cursor-pointer ${focusArea === 'sidebar' ? 'bg-purple-600 text-white border-white shadow-lg' : 'bg-white/5 text-gray-400 hover:bg-white/10'}`}
                             onClick={() => {
                                 setViewMode('groups');
                                 setFocusArea('list');
@@ -612,10 +612,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ channel, allChannels, 
                    </div>
                )}
             </div>
-          </div>
-          <div className="text-right pb-1">
-             <div className="bg-red-600 px-3 py-1 inline-block rounded text-xs font-bold uppercase tracking-wider mb-2">Live</div>
-             <p className="text-gray-400 text-sm">CH+/- to Change • Back to Exit</p>
           </div>
         </div>
       </div>
