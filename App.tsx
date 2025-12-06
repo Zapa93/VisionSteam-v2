@@ -4,7 +4,7 @@ import { Sidebar } from './components/Sidebar';
 import { VideoPlayer } from './components/VideoPlayer';
 import { fetchPlaylist } from './services/m3uService';
 import { fetchEPG, getCurrentProgram } from './services/epgService';
-import { Category, Channel, PlaylistData, EPGData } from './types';
+import { Category, Channel, PlaylistData, EPGData, ChannelGroup } from './types';
 import { ENTERTAINMENT_URL, SPORT_URL, DEFAULT_LOGO, MANUAL_EPG_URL } from './constants';
 
 // --- CONSTANTS FOR VIRTUALIZATION ---
@@ -12,14 +12,16 @@ const CHANNEL_HEIGHT = 90; // px
 const HEADER_HEIGHT = 50; // px
 
 interface FlatItem {
-  type: 'header' | 'channel';
+  type: 'group' | 'channel'; // Removed 'header' as we use full group view
   id: string;
   top: number;
   height: number;
-  data?: Channel;
+  data?: Channel;      // For type='channel'
+  groupData?: ChannelGroup; // For type='group'
   title?: string;
   index: number; 
   channelNumber?: number;
+  count?: number; // For groups
 }
 
 const App: React.FC = () => {
@@ -27,6 +29,7 @@ const App: React.FC = () => {
   const [playlist, setPlaylist] = useState<PlaylistData>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null);
+  const [selectedGroup, setSelectedGroup] = useState<ChannelGroup | null>(null);
   
   // EPG State
   const [epgData, setEpgData] = useState<EPGData>({});
@@ -39,6 +42,7 @@ const App: React.FC = () => {
   // --- FOCUS STATE ---
   const [activeSection, setActiveSection] = useState<'sidebar' | 'list'>('sidebar');
   const [focusedIndex, setFocusedIndex] = useState<number>(-1);
+  const [savedGroupIndex, setSavedGroupIndex] = useState<number>(0); // Restore focus when going back
 
   // Load Playlist & EPG
   useEffect(() => {
@@ -46,6 +50,7 @@ const App: React.FC = () => {
       setLoading(true);
       setPlaylist([]);
       setEpgData({});
+      setSelectedGroup(null); // Reset group on category change
       
       const url = activeCategory === Category.KANALER ? ENTERTAINMENT_URL : SPORT_URL;
       const { groups, epgUrl } = await fetchPlaylist(url);
@@ -55,6 +60,7 @@ const App: React.FC = () => {
       // Reset focus
       setActiveSection('sidebar');
       setFocusedIndex(-1);
+      setSavedGroupIndex(0);
 
       // Fetch EPG: Prioritize Manual URL if present
       const epgSource = MANUAL_EPG_URL || epgUrl;
@@ -70,40 +76,43 @@ const App: React.FC = () => {
   const { items: flatItems, totalHeight } = useMemo(() => {
     const items: FlatItem[] = [];
     let currentTop = 0;
-    let channelCounter = 1;
     
-    playlist.forEach(group => {
-      if (group.channels.length === 0) return;
-      const isUncategorized = group.title.toLowerCase() === 'uncategorized';
-      
-      if (!isUncategorized) {
-         items.push({
-           type: 'header',
-           id: `hdr-${group.title}`,
-           title: group.title,
-           top: currentTop,
-           height: HEADER_HEIGHT,
-           index: items.length
-         });
-         currentTop += HEADER_HEIGHT;
-      }
-      
-      group.channels.forEach(channel => {
-        items.push({
-          type: 'channel',
-          id: channel.id,
-          data: channel,
-          top: currentTop,
-          height: CHANNEL_HEIGHT,
-          index: items.length,
-          channelNumber: channelCounter++
+    if (!selectedGroup) {
+        // --- VIEW 1: GROUPS LIST ---
+        playlist.forEach((group) => {
+             // Filter out empty groups if desired, keeping Uncategorized if it has channels
+             if (group.channels.length === 0) return;
+             
+             items.push({
+                 type: 'group',
+                 id: `grp-${group.title}`,
+                 title: group.title,
+                 groupData: group,
+                 top: currentTop,
+                 height: CHANNEL_HEIGHT,
+                 index: items.length,
+                 count: group.channels.length
+             });
+             currentTop += CHANNEL_HEIGHT;
         });
-        currentTop += CHANNEL_HEIGHT;
-      });
-    });
+    } else {
+        // --- VIEW 2: CHANNELS IN GROUP ---
+        selectedGroup.channels.forEach((channel, idx) => {
+            items.push({
+                type: 'channel',
+                id: channel.id,
+                data: channel,
+                top: currentTop,
+                height: CHANNEL_HEIGHT,
+                index: items.length,
+                channelNumber: idx + 1
+            });
+            currentTop += CHANNEL_HEIGHT;
+        });
+    }
     
     return { items, totalHeight: currentTop };
-  }, [playlist]);
+  }, [playlist, selectedGroup]);
 
   // --- MEASURE CONTAINER ---
   useEffect(() => {
@@ -122,8 +131,7 @@ const App: React.FC = () => {
       if (item) {
         const currentScroll = scrollRef.current.scrollTop;
         const viewH = scrollRef.current.clientHeight;
-        // Logic modified to avoid fighting mouse scroll if item is already visible
-        // Only scroll if strictly out of bounds
+        
         if (item.top < currentScroll) {
             scrollRef.current.scrollTo({ top: item.top, behavior: 'auto' });
         } else if (item.top + item.height > currentScroll + viewH) {
@@ -139,22 +147,35 @@ const App: React.FC = () => {
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (loading) return;
+      
       // Focus Rescue
       if (!document.activeElement || document.activeElement === document.body) {
          const btn = document.querySelector(`[data-sidebar-item="${activeCategory}"]`) as HTMLElement;
          btn?.focus();
       }
 
-      const isNav = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'PageUp', 'PageDown'].includes(e.key);
+      const isNav = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'PageUp', 'PageDown', 'Backspace', 'Escape'].includes(e.key) || e.keyCode === 461; // 461 is WebOS Back
       if (!isNav) return;
+
+      // Global Back Handling
+      if (e.key === 'Backspace' || e.key === 'Escape' || e.keyCode === 461) {
+          if (selectedGroup) {
+              e.preventDefault();
+              setSelectedGroup(null);
+              setFocusedIndex(savedGroupIndex); // Restore focus to the group we just left
+              setActiveSection('list');
+              return;
+          }
+          // If no group selected, standard behavior (exit app or do nothing)
+          return;
+      }
 
       if (activeSection === 'sidebar') {
         if (e.key === 'ArrowRight') {
            e.preventDefault();
            setActiveSection('list');
            if (focusedIndex === -1) {
-              const firstChannelIdx = flatItems.findIndex(i => i.type === 'channel');
-              setFocusedIndex(firstChannelIdx !== -1 ? firstChannelIdx : 0);
+              setFocusedIndex(0);
            }
            (document.activeElement as HTMLElement)?.blur();
            return;
@@ -179,6 +200,7 @@ const App: React.FC = () => {
             }
         }
       } else {
+        // IN LIST
         e.preventDefault();
         if (e.key === 'ArrowLeft') {
            setActiveSection('sidebar');
@@ -190,7 +212,17 @@ const App: React.FC = () => {
         }
         if (e.key === 'Enter') {
             const item = flatItems[focusedIndex];
-            if (item && item.type === 'channel' && item.data) {
+            if (!item) return;
+
+            if (item.type === 'group' && item.groupData) {
+                // Enter Group
+                setSavedGroupIndex(focusedIndex); // Save where we were
+                setSelectedGroup(item.groupData);
+                setFocusedIndex(0); // Reset focus for new list
+                // Scroll reset is automatic due to item change but explicit check
+                if (scrollRef.current) scrollRef.current.scrollTo(0,0);
+            } else if (item.type === 'channel' && item.data) {
+                // Play Channel
                 setSelectedChannel(item.data);
             }
             return;
@@ -199,34 +231,35 @@ const App: React.FC = () => {
         let nextIndex = focusedIndex;
         if (e.key === 'ArrowUp') nextIndex--;
         else if (e.key === 'ArrowDown') nextIndex++;
-        else if (e.key === 'PageUp') nextIndex += 5;
-        else if (e.key === 'PageDown') nextIndex -= 5;
+        else if (e.key === 'PageUp') nextIndex -= 5;
+        else if (e.key === 'PageDown') nextIndex += 5;
 
         if (nextIndex < 0) nextIndex = 0;
         if (nextIndex >= flatItems.length) nextIndex = flatItems.length - 1;
-        if (flatItems[nextIndex].type === 'header') {
-            if (nextIndex > focusedIndex) nextIndex++; else nextIndex--;
-        }
-        if (nextIndex < 0) nextIndex = 0;
-        if (nextIndex >= flatItems.length) nextIndex = flatItems.length - 1;
-
+        
         setFocusedIndex(nextIndex);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeSection, focusedIndex, flatItems, loading, selectedChannel, activeCategory]);
+  }, [activeSection, focusedIndex, flatItems, loading, selectedChannel, activeCategory, selectedGroup, savedGroupIndex]);
 
   // --- RENDER HELPERS ---
   const renderVirtualItems = () => {
     if (loading || flatItems.length === 0) return null;
 
     let startIndex = 0;
+    // Simple Viewport Culling
+    const buffer = 300; // px
+    const topBound = Math.max(0, scrollTop - buffer);
+    const bottomBound = scrollTop + containerHeight + buffer;
+
+    // Binary search roughly
     let low = 0, high = flatItems.length - 1;
     while (low <= high) {
         const mid = Math.floor((low + high) / 2);
-        if (flatItems[mid].top + flatItems[mid].height < scrollTop - 100) {
+        if (flatItems[mid].top + flatItems[mid].height < topBound) {
             low = mid + 1;
         } else {
             high = mid - 1;
@@ -236,26 +269,62 @@ const App: React.FC = () => {
     
     let endIndex = startIndex;
     for (let i = startIndex; i < flatItems.length; i++) {
-        if (flatItems[i].top > scrollTop + containerHeight + 100) break;
+        if (flatItems[i].top > bottomBound) break;
         endIndex = i;
     }
 
     return flatItems.slice(startIndex, endIndex + 1).map((item) => {
-        if (item.type === 'header') {
+        const isFocused = activeSection === 'list' && focusedIndex === item.index;
+
+        if (item.type === 'group') {
             return (
                 <div
                     key={item.id}
+                    onMouseEnter={() => {
+                        setFocusedIndex(item.index);
+                        setActiveSection('list');
+                    }}
+                    onMouseMove={() => {
+                       if (activeSection !== 'list' || focusedIndex !== item.index) {
+                          setFocusedIndex(item.index);
+                          setActiveSection('list');
+                       }
+                    }}
+                    onClick={() => {
+                        setFocusedIndex(item.index);
+                        setActiveSection('list');
+                        if (item.groupData) {
+                            setSavedGroupIndex(item.index);
+                            setSelectedGroup(item.groupData);
+                            setFocusedIndex(0);
+                            if (scrollRef.current) scrollRef.current.scrollTo(0,0);
+                        }
+                    }}
                     style={{ position: 'absolute', top: item.top, left: 0, right: 0, height: item.height }}
-                    className="flex items-center px-6 bg-[#050505] border-b border-white/5 z-0"
+                    className={`group px-4 py-1.5 cursor-pointer ${isFocused ? 'z-10' : 'z-0'}`}
                 >
-                    <span className="text-purple-400 text-sm font-bold uppercase tracking-wider">{item.title}</span>
+                     <div className={`w-full h-full rounded-xl flex items-center px-6 border transition-transform duration-100 ${isFocused ? 'bg-[#222] border-white border-2 scale-[1.01]' : 'bg-[#161616] border-white/5 hover:bg-white/5'}`}>
+                        {/* Folder Icon */}
+                        <div className={`w-14 h-14 flex items-center justify-center rounded-lg ${isFocused ? 'bg-white text-black' : 'bg-gray-800 text-gray-400'}`}>
+                             <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor">
+                                <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+                             </svg>
+                        </div>
+                        <div className="ml-6 flex-1">
+                             <h3 className={`text-2xl font-bold truncate ${isFocused ? 'text-white' : 'text-gray-200'}`}>{item.title}</h3>
+                             <p className="text-gray-500 text-sm mt-1">{item.count} Channels</p>
+                        </div>
+                        <div className={`p-2 rounded-full ${isFocused ? 'bg-white/20' : 'bg-transparent'}`}>
+                             <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                             </svg>
+                        </div>
+                     </div>
                 </div>
             );
         }
 
-        const isFocused = activeSection === 'list' && focusedIndex === item.index;
-        
-        // EPG Info
+        // --- CHANNEL ITEM RENDERER ---
         const currentProg = item.data?.tvgId ? getCurrentProgram(epgData[item.data.tvgId]) : null;
         let itemProgress = 0;
         if (currentProg) {
@@ -328,16 +397,6 @@ const App: React.FC = () => {
     });
   };
 
-  const currentHeader = useMemo(() => {
-     if (flatItems.length === 0) return null;
-     let idx = 0;
-     for (let i = 0; i < flatItems.length; i++) {
-        if (flatItems[i].top > scrollTop + HEADER_HEIGHT) break;
-        if (flatItems[i].type === 'header') idx = i;
-     }
-     return flatItems[idx]?.type === 'header' ? flatItems[idx] : null;
-  }, [scrollTop, flatItems]);
-
   const handleClosePlayer = useCallback(() => setSelectedChannel(null), []);
 
   return (
@@ -353,9 +412,24 @@ const App: React.FC = () => {
       <div className="flex-1 flex flex-col h-full relative z-0">
         <header className="h-24 px-8 flex items-center justify-between border-b border-white/5 bg-[#0a0a0a] z-20 shadow-sm shrink-0">
           <div>
-            <h2 className="text-3xl font-bold text-white tracking-tight">{activeCategory}</h2>
+            <div className="flex items-center gap-3">
+               <h2 className="text-3xl font-bold text-white tracking-tight">{activeCategory}</h2>
+               {selectedGroup && (
+                   <>
+                      <svg className="w-6 h-6 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                      <h2 className="text-3xl font-bold text-purple-400 tracking-tight">{selectedGroup.title}</h2>
+                   </>
+               )}
+            </div>
             <p className="text-gray-400 text-sm mt-1">
-              {loading ? 'Loading...' : `${flatItems.filter(i => i.type === 'channel').length} channels`}
+              {loading 
+                 ? 'Loading...' 
+                 : selectedGroup 
+                    ? `${selectedGroup.channels.length} channels`
+                    : `${playlist.length} Groups`
+              }
             </p>
           </div>
         </header>
@@ -369,11 +443,6 @@ const App: React.FC = () => {
             <>
                 <div style={{ height: totalHeight, width: '100%' }} />
                 {renderVirtualItems()}
-                {currentHeader && (
-                    <div className="sticky top-0 left-0 right-0 h-[50px] px-6 flex items-center bg-[#050505] border-b border-white/5 z-20 shadow-md">
-                        <span className="text-purple-400 text-sm font-bold uppercase tracking-wider">{currentHeader.title}</span>
-                    </div>
-                )}
             </>
           )}
         </div>
@@ -382,7 +451,8 @@ const App: React.FC = () => {
       {selectedChannel && (
         <VideoPlayer 
           channel={selectedChannel} 
-          allChannels={playlist.flatMap(g => g.channels)}
+          allChannels={selectedGroup ? selectedGroup.channels : playlist.flatMap(g => g.channels)}
+          playlist={playlist}
           epgData={epgData}
           onChannelSelect={setSelectedChannel}
           onClose={handleClosePlayer} 
